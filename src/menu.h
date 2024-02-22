@@ -9,7 +9,9 @@ enum Menu_State {
     MS_HOME = 4,
     MS_WRAPPING = 5,
     MS_SETTING = 10,
-    MS_SAVED = 11
+    MS_SAVED = 11,
+    MS_RWORK = 12,
+    MS_NCALIBRATION = 13
 };
 
 class Menu {
@@ -19,9 +21,10 @@ public:
     void init();
 
     void setState(Menu_State state);
+    void setState(Menu_State state, Menu_State nextState, int delay);
     void showValue(float value, String name);
 
-    void tick();
+    Menu_State tick();
 
     void processed(long time);
     void compleate();
@@ -31,12 +34,15 @@ private:
 
     Menu_State _state = MS_START;
     Menu_State _activeState = MS_START;
+    Menu_State _nextState = MS_START;
 
     bool _processed = false;
     int _step = 0;
     bool _setTime = false;
     int _stepDelay = 0;
     long _delay;
+
+    uint32_t _updateStateDeleay = 0;
 
     String _strValue = "";
     bool _update = false;
@@ -53,6 +59,13 @@ void Menu::setState(Menu_State state)
 {
     _state = state;
 	_update = true;
+}
+
+void  Menu::setState(Menu_State state, Menu_State nextState, int delay)
+{
+    setState(state);
+    _nextState = nextState;
+    _updateStateDeleay = millis() + delay;
 }
 
 void Menu::init()
@@ -108,8 +121,13 @@ void Menu::showValue(float value, String name = "val")
     _update = true;
 }
 
-void Menu::tick()
+Menu_State Menu::tick()
 {
+    if(_updateStateDeleay && millis() > _updateStateDeleay){
+        _updateStateDeleay = 0;
+        setState(_nextState);
+    }
+
     if (_update) {
         _lcd->clear();
     }
@@ -119,7 +137,7 @@ void Menu::tick()
     }
 
     if (_activeState == _state && !_update) {
-        return;
+        return _activeState;
     }
 
     _update = false;
@@ -151,6 +169,14 @@ void Menu::tick()
         _lcd->setCursor(6, 0);
         _lcd->print("Saved");
         break;
+    case MS_RWORK:
+        _lcd->setCursor(1, 0);
+        _lcd->print("Ready to work");
+        break;           
+    case MS_NCALIBRATION:
+        _lcd->setCursor(0, 0);
+        _lcd->print("Need calibration");
+        break;             
     case MS_HOME:
         _lcd->setCursor(3, 0);
         _lcd->print("Move home");
@@ -162,4 +188,6 @@ void Menu::tick()
     default:
         break;
     }
+
+    return _activeState;
 }

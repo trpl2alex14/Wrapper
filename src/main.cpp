@@ -8,13 +8,14 @@
 #include <menu.h>
 #include <message.h>
 
-#define TURNS_LENGTH 8
-#define STEPPS 200
-#define MAXSPEED (6 * STEPPS)
+#define TURNS_LENGTH 60.0f //60mm or 8mm
+#define STEPPS 400.0f
+#define DELTA_POS 10.0f //10mm 
+#define MAXSPEED (1 * STEPPS)
 
-#define CALIBRATION_SPEED (MAXSPEED)
+#define CALIBRATION_SPEED (2 * MAXSPEED)
 
-#define AKEY_PERIOD 100
+#define AKEY_PERIOD 150
 
 #define INP_PIN 3 // int0
 #define STOP_ITR 1
@@ -59,12 +60,15 @@ const int turnLength = TURNS_LENGTH;
 const double stepsInMM = STEPPS / TURNS_LENGTH;
 
 int fixTurns = 10;
-int fixStepps = 100;
+double fixStepps = 4.0f / TURNS_LENGTH * STEPPS;
 
 double needTurns = 27;
 long startPos = 40;
 long endPos = 40;
 long maxPos = 0;
+
+double ratioTurns = 0.35;  // 35% / 65% turns
+double calcTurns = 0;
 
 double setValue = 0;
 String nameValue = "";
@@ -81,12 +85,12 @@ void processCalibration();
 void enableIsr();
 void stopStepperIsr();
 
-void runSteppers(long steps, float turns, bool dir = true)
+void runSteppers(long steps, double turns, bool dir = true)
 {
-    float timeMax = max(steps, turns * STEPPS) / MAXSPEED;
+    double timeMax = max(steps, turns * STEPPS) / MAXSPEED;
 
-    float speed1 = steps / timeMax;
-    float speed2 = turns * STEPPS / timeMax;
+    double speed1 = steps / timeMax;
+    double speed2 = turns * STEPPS / timeMax;
 
     stepper1.setRunMode(FOLLOW_POS);
     stepper2.setRunMode(FOLLOW_POS);
@@ -113,12 +117,15 @@ void startWrapping()
     showStateMsg(M_WRAPPING);
 
     menu.setState(MS_WRAPPING);
+    stepper1.autoPower(false);
+    stepper2.autoPower(false);     
 
     state = WRAP;
     wrapState = MOVE_START;
 
-    float turns = startPos / turnLength;
-    runSteppers(startPos * STEPPS / 10, turns);
+    calcTurns = maxPos + fixStepps - (endPos + startPos) * stepsInMM;
+    float turns = startPos / 10;
+    runSteppers(startPos * stepsInMM, turns);
 }
 
 void processWrapping()
@@ -144,10 +151,11 @@ void processWrapping()
         break;
     case WRAP_START:
         wrapState = MOVE_END;
-        runSteppers(maxPos + fixStepps - (endPos + startPos) * stepsInMM, needTurns);
+        runSteppers( calcTurns * ratioTurns, needTurns / 2);
         break;
     case MOVE_END:
         wrapState = END;
+        runSteppers( calcTurns * (1 - ratioTurns), needTurns / 2);
         break;
     case END:
         wrapState = WRAP_END;
@@ -157,9 +165,11 @@ void processWrapping()
         wrapState = COMPLEATE;
         break;
     case COMPLEATE:
+        stepper1.enable();
+        stepper2.enable();
         state = READY;
         showStateMsg(M_WRAPPING_COMPLEATE);
-        menu.setState(MS_READY);
+        menu.setState(MS_READY, MS_RWORK, 2000);
         break;
     }
 }
@@ -171,7 +181,8 @@ void startHome()
         return;
     }
 
-    state = MOVE_HOME;
+    state = MOVE_HOME;    
+    stepper2.disable();    
     stepper1.setRunMode(FOLLOW_POS);
     stepper1.setMaxSpeed(MAXSPEED);
     stepper1.setTarget(0);
@@ -188,10 +199,10 @@ void processHome()
         return;
     }
 
-    if (!stepper1.tick()) {
+    if (!stepper1.tick()) {      
         state = HOME;
         showStateMsg(M_READY);
-        menu.setState(MS_READY);
+        menu.setState(MS_READY, MS_RWORK, 2000);
     }
 }
 
@@ -207,10 +218,15 @@ void startCalibration()
 
     stepper1.stop();
     stepper2.stop();
+    stepper1.autoPower(false);
+    stepper2.autoPower(false);
+    stepper1.disable(); 
+    stepper2.disable(); 
 
     maxPos = 0;
     isStopIsr = false;
     state = CALIBRATION;
+    enableIsr();
 
     stepper1.setRunMode(KEEP_SPEED);
     stepper1.setSpeed(-1 * CALIBRATION_SPEED);
@@ -231,17 +247,18 @@ void processCalibration()
     detachInterrupt(STOP_ITR);
 
     if (!maxPos) {
-        stepper1.setCurrent(-100);
+        stepper1.setCurrent(-1 * DELTA_POS * stepsInMM);
         stepper1.setSpeed(CALIBRATION_SPEED);
 
         maxPos = 1;
         debounceReverse = millis();
         showStateMsg(M_CALIBRATION_START);
     } else if (maxPos == 2) {
-        maxPos = stepper1.getCurrent() - 100;
+        maxPos = stepper1.getCurrent() - DELTA_POS * stepsInMM;
 
         stepper1.setRunMode(FOLLOW_POS);
-        stepper1.setTarget(-100, RELATIVE);
+        stepper1.setMaxSpeed(CALIBRATION_SPEED);
+        stepper1.setTarget(maxPos / 2);
 
         debounceReverse = millis();
         showStateMsg(M_CALIBRATION_END, String(maxPos));
@@ -250,11 +267,11 @@ void processCalibration()
     if (millis() - debounceReverse > 500) {
         if (maxPos == 1) {
             maxPos = 2;
-        }
+        }      
 
-        if (maxPos > 2) {
+        if (maxPos > 2) {          
             state = READY;
-            menu.setState(MS_READY);
+            menu.setState(MS_READY, MS_RWORK, 2000);
         }
 
         isStopIsr = false;
@@ -264,7 +281,18 @@ void processCalibration()
 
 void enableIsr()
 {
-    attachInterrupt(STOP_ITR, stopStepperIsr, CHANGE);
+    attachInterrupt(STOP_ITR, stopStepperIsr, LOW);
+}
+
+void abortStepper()
+{
+    stepper1.stop();
+    stepper2.stop();
+    stepper1.disable();
+    stepper2.disable();
+    state = INIT;
+
+    menu.setState(MS_ABORT, MS_NCALIBRATION, 2000);
 }
 
 void stopStepperIsr()
@@ -273,21 +301,15 @@ void stopStepperIsr()
         return;
     }
 
-    if (millis() - debounce >= 1000 && digitalRead(INP_PIN)) {
+    if (millis() - debounce >= 1000 && !digitalRead(INP_PIN)) {
         stepper1.stop();
         stepper2.stop();
         debounce = millis();
         isStopIsr = true;
+        if(state != CALIBRATION){
+            abortStepper();   
+        }
     }
-}
-
-void abortStepper()
-{
-    stepper1.stop();
-    stepper2.stop();
-    state = INIT;
-
-    menu.setState(MS_ABORT);
 }
 
 void saveOptions()
@@ -327,6 +349,9 @@ void keyAction()
 {
     switch (keypad.action()) {
     case KB_RIGHT:
+        if(!digitalRead(INP_PIN)){
+            break;
+        }
         if (state == INIT) {
             startCalibration();
         } else if (state == READY) {
@@ -346,12 +371,18 @@ void keyAction()
         }
         break;
     case KB_UP:
+        if (state == INIT && digitalRead(INP_PIN)) {            
+            stepper1.setTarget(stepsInMM, RELATIVE);      
+        }    
         if (state == P_SET_TURNS || state == P_SET_LEFT || state == P_SET_RIGHT) {
             setValue++;
             menu.showValue(setValue, nameValue);
         }
         break;
     case KB_DOWN:
+        if (state == INIT && digitalRead(INP_PIN)) {            
+            stepper1.setTarget(-1 * stepsInMM * 0.3, RELATIVE);               
+        }  
         if (state == P_SET_TURNS || state == P_SET_LEFT || state == P_SET_RIGHT) {
             setValue--;
             setValue = setValue < 0 ? 0 : setValue;
@@ -359,7 +390,7 @@ void keyAction()
         }
         break;
     case KB_SELECT:
-        if (state == CALIBRATION) {
+        if (state == CALIBRATION || state == WRAP ||state == MOVE_HOME || state == HOME) {
             abortStepper();
         } else if (state == READY || state == HOME || state == INIT) {
             state = P_SET_TURNS;
@@ -381,7 +412,7 @@ void keyAction()
             endPos = setValue;
             nameValue = "";
             saveOptions();
-            menu.setState(MS_SAVED);
+            menu.setState(MS_SAVED, MS_NCALIBRATION, 2000);
         }
 
         if (nameValue) {
@@ -401,18 +432,19 @@ void setup()
 
     pinMode(INP_PIN, INPUT_PULLUP);
     enableIsr();
-
-    stepper1.disable();
-    stepper1.autoPower(true);
+    
+    stepper1.autoPower(false);
     stepper1.setRunMode(FOLLOW_POS);
     stepper1.setAcceleration(0);
     stepper1.setMaxSpeed(MAXSPEED);
-
-    stepper2.disable();
-    stepper2.autoPower(true);
+    stepper1.reverse(false);
+    stepper1.disable();
+    
+    stepper2.autoPower(false);
     stepper2.setRunMode(FOLLOW_POS);
     stepper2.setAcceleration(0);
     stepper2.setMaxSpeed(MAXSPEED);
+    stepper2.disable();
 
     keypad.attach(keyAction);
     showStateMsg(M_BOOT);
@@ -428,4 +460,5 @@ void loop()
 
     keypad.tick();
     menu.tick();
+    stepper1.tick(); 
 }
