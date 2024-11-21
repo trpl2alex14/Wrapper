@@ -9,16 +9,17 @@
 #include <message.h>
 
 #define TURNS_LENGTH 60.0f //60mm or 8mm
-#define STEPPS 400.0f
+#define STEPPS 800.0f
 #define DELTA_POS 10.0f //10mm 
-#define MAXSPEED (1 * STEPPS)
+#define MAXSPEED (2 * STEPPS)
 
-#define CALIBRATION_SPEED (2 * MAXSPEED)
+#define CALIBRATION_SPEED (3 * MAXSPEED)
 
 #define AKEY_PERIOD 150
 
 #define INP_PIN 3 // int0
 #define STOP_ITR 1
+#define START_KEY A5
 
 LedKeypad<AKEY_PERIOD> keypad(A0);  //14 pin
 
@@ -99,7 +100,7 @@ void runSteppers(long steps, double turns, bool dir = true)
     stepper2.setMaxSpeed(speed2);
 
     stepper1.setTarget((dir ? 1 : -1) * steps, RELATIVE);
-    stepper2.setTarget(turns * STEPPS, RELATIVE);
+    stepper2.setTarget((turns - 0.2) * STEPPS, RELATIVE);
 
     if (timeMax > 1) {
         menu.processed((int)timeMax * 1000);
@@ -316,10 +317,10 @@ void saveOptions()
 {
     Options buf;
 
-    EEPROM.get(0, buf);
+    /*EEPROM.get(0, buf);
     if (buf.endPos == endPos && buf.needTurns == needTurns && buf.startPos == startPos) {
         return;
-    }
+    }*/
 
     buf.needTurns = needTurns;
     buf.startPos = startPos;
@@ -345,6 +346,22 @@ void LoadOptions()
     showStateMsg(M_OPTIONS_L, "turns: " + String(needTurns, 2) + "\nleft: " + String(startPos) + "\nright: " + String(endPos));
 }
 
+
+bool startPress()
+{
+    if (state == INIT) {
+        startCalibration();
+    } else if (state == READY) {
+        startHome();
+    } else if (state == HOME) {
+        startWrapping();
+    }else {
+        return false;
+    }
+
+    return true;
+}
+
 void keyAction()
 {
     switch (keypad.action()) {
@@ -352,20 +369,14 @@ void keyAction()
         if(!digitalRead(INP_PIN)){
             break;
         }
-        if (state == INIT) {
-            startCalibration();
-        } else if (state == READY) {
-            startHome();
-        } else if (state == HOME) {
-            startWrapping();
-        } else if (state == P_SET_TURNS || state == P_SET_LEFT || state == P_SET_RIGHT) {
-            setValue += 0.25;
+        if (!startPress() && (state == P_SET_TURNS || state == P_SET_LEFT || state == P_SET_RIGHT)) {
+            setValue += 0.1;
             menu.showValue(setValue, nameValue);
         }
         break;
     case KB_LEFT:
         if (state == P_SET_TURNS || state == P_SET_LEFT || state == P_SET_RIGHT) {
-            setValue -= 0.25;
+            setValue -= 0.1;
             setValue = setValue < 0 ? 0 : setValue;
             menu.showValue(setValue, nameValue);
         }
@@ -431,6 +442,7 @@ void setup()
     LoadOptions();
 
     pinMode(INP_PIN, INPUT_PULLUP);
+    pinMode(START_KEY, INPUT_PULLUP);
     enableIsr();
     
     stepper1.autoPower(false);
@@ -446,7 +458,7 @@ void setup()
     stepper2.setMaxSpeed(MAXSPEED);
     stepper2.disable();
 
-    keypad.attach(keyAction);
+    keypad.attach(keyAction);    
     showStateMsg(M_BOOT);
 
     menu.init();
@@ -458,7 +470,15 @@ void loop()
     processHome();
     processWrapping();
 
-    keypad.tick();
+    static unsigned long pushStartBtnTime;
+    if (!digitalRead(START_KEY) && pushStartBtnTime == 0) {
+        pushStartBtnTime = millis();
+    } else if (digitalRead(START_KEY) && pushStartBtnTime > 0 && millis() - pushStartBtnTime > 150) {
+        pushStartBtnTime = 0;
+        startPress();   
+    }
+
+    keypad.tick();    
     menu.tick();
     stepper1.tick(); 
 }
